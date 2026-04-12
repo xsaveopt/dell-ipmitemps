@@ -1,0 +1,32 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inject version into script
+        run: sed -i "s/^VERSION=.*/VERSION=\"${GITHUB_REF_NAME}\"/" dellipmifanctl.sh
+
+      - name: Create release archive
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          zip -r "dellipmifanctl-${TAG}.zip" . \
+            --exclude '.git/*' \
+            --exclude '.github/*'
+          echo "ARCHIVE=dellipmifanctl-${TAG}.zip" >> "$GITHUB_ENV"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ARCHIVE }}
+          generate_release_notes: true
