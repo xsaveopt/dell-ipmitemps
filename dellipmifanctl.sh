@@ -9,6 +9,7 @@ VERSION="0.0.0"
 # ---------------------------------------------------------------------------
 
 CONFIG_FILE="${DELLIPMIFANCTL_CONFIG:-/etc/dellipmifanctl/config.conf}"
+STATE_FILE="/run/dellipmifanctl.state"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -211,11 +212,12 @@ compute_fan_speed() {
 
 _restore_auto() {
   log "Restoring BMC automatic fan control."
-  ipmi_set_auto || true
+  ipmi_set_auto
   if [[ "${DISABLE_PCIE_COOLING_RESPONSE:-false}" == "true" ]]; then
     log "Restoring BMC PCIe cooling response."
-    ipmi_enable_pcie_cooling || true
+    ipmi_enable_pcie_cooling
   fi
+  rm "$STATE_FILE" || true
   exit 0
 }
 trap _restore_auto SIGTERM SIGINT SIGHUP
@@ -225,6 +227,12 @@ trap _restore_auto SIGTERM SIGINT SIGHUP
 
 consecutive_failures=0
 in_auto_mode=false
+last_speed=-1
+
+if [[ -f "$STATE_FILE" ]]; then
+  last_speed="$(< "$STATE_FILE")"
+  log "Restored last speed from state: ${last_speed}%"
+fi
 
 log "dellipmifanctl starting. Poll interval: ${POLL_INTERVAL}s. Sensors: ${#TEMP_SENSORS[@]}."
 
@@ -257,7 +265,7 @@ while true; do
   done
 
   if $fetch_failed; then
-    (( consecutive_failures++ )) || true
+    consecutive_failures=$(( consecutive_failures + 1 ))
     log_warn "Fetch failed (${consecutive_failures}/${MAX_FETCH_FAILURES})."
 
     if (( consecutive_failures >= MAX_FETCH_FAILURES )) && ! $in_auto_mode; then
@@ -287,11 +295,18 @@ while true; do
     log "Temperatures normal — resuming manual control."
     ipmi_set_manual
     in_auto_mode=false
+    last_speed=-1  # BMC may have changed speed; force re-apply
   fi
 
   target="$(compute_fan_speed "${sensor_readings[@]}")"
-  log "Setting fan speed: ${target}%"
-  ipmi_set_speed "$target"
+  if [[ "$target" != "$last_speed" ]]; then
+    log "Setting fan speed: ${target}%"
+    ipmi_set_speed "$target"
+    last_speed="$target"
+    printf '%s' "$target" > "$STATE_FILE"
+  else
+    log "Fan speed unchanged: ${target}%"
+  fi
 
   sleep "$POLL_INTERVAL"
 done
