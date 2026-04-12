@@ -13,7 +13,6 @@ new_version="$(grep '^VERSION=' "$SCRIPT_DIR/dellipmifanctl.sh" | cut -d'"' -f2)
 echo "Installing version: ${new_version}"
 
 install -m 755 "$SCRIPT_DIR/dellipmifanctl.sh" "$BIN_DIR/dellipmifanctl"
-install -m 755 "$SCRIPT_DIR/update.sh"         "$BIN_DIR/dellipmifanctl-update"
 
 if systemctl is-active --quiet dellipmifanctl; then
   systemctl restart dellipmifanctl
