@@ -17,7 +17,6 @@ echo "Installing dellipmifanctl..."
 install -d "$CONF_DIR"
 
 install -m 755 "$SCRIPT_DIR/dellipmifanctl.sh" "$BIN_DIR/dellipmifanctl"
-install -m 755 "$SCRIPT_DIR/update.sh" "$BIN_DIR/dellipmifanctl-update"
 
 # Only install config if one doesn't already exist
 if [[ -f "$CONF_DIR/config.conf" ]]; then

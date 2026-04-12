@@ -43,7 +43,7 @@ Download and extract the latest release, then run:
 sudo ./update.sh
 ```
 
-This replaces the installed binary and restarts the service if it is running. Your config is always preserved.
+This replaces the installed binary and restarts the service if running. Your config is always preserved.
 
 ## Uninstall
 

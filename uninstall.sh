@@ -23,7 +23,6 @@ rm -f /etc/systemd/system/dellipmifanctl.service
 systemctl daemon-reload
 
 rm -f /usr/local/bin/dellipmifanctl
-rm -f /usr/local/bin/dellipmifanctl-update
 
 if $purge; then
   rm -rf /etc/dellipmifanctl
