@@ -100,13 +100,13 @@ _parse_prom_response() {
 _http_get() {
   local __body_var="$1" __code_var="$2" __reason_var="$3" url="$4"
   shift 4
-  local tmp curl_exit code body
+  local tmp curl_exit _code _body
   tmp="$(mktemp)"
 
   # shellcheck disable=SC2086
-  code="$(curl -s -o "$tmp" -w '%{http_code}' --max-time 10 "$@" "$url")"
+  _code="$(curl -s -o "$tmp" -w '%{http_code}' --max-time 10 "$@" "$url")"
   curl_exit=$?
-  body="$(< "$tmp")"
+  _body="$(< "$tmp")"
   rm -f "$tmp"
 
   if (( curl_exit != 0 )); then
@@ -120,19 +120,19 @@ _http_get() {
     return 1
   fi
 
-  if [[ "$code" != 2* ]]; then
-    case "$code" in
-      401|403) printf -v "$__reason_var" 'HTTP %s — authentication/authorization rejected' "$code" ;;
+  if [[ "$_code" != 2* ]]; then
+    case "$_code" in
+      401|403) printf -v "$__reason_var" 'HTTP %s — authentication/authorization rejected' "$_code" ;;
       404)     printf -v "$__reason_var" 'HTTP 404 — endpoint not found (check URL/datasource UID)' ;;
       429)     printf -v "$__reason_var" 'HTTP 429 — rate limited' ;;
-      5*)      printf -v "$__reason_var" 'HTTP %s — server error' "$code" ;;
-      *)       printf -v "$__reason_var" 'HTTP %s' "$code" ;;
+      5*)      printf -v "$__reason_var" 'HTTP %s — server error' "$_code" ;;
+      *)       printf -v "$__reason_var" 'HTTP %s' "$_code" ;;
     esac
     return 1
   fi
 
-  printf -v "$__body_var" '%s' "$body"
-  printf -v "$__code_var" '%s' "$code"
+  printf -v "$__body_var" '%s' "$_body"
+  printf -v "$__code_var" '%s' "$_code"
 }
 
 # Query Prometheus directly via HTTP API.
