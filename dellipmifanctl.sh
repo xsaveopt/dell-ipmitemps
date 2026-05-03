@@ -271,6 +271,9 @@ while true; do
     if (( consecutive_failures >= MAX_FETCH_FAILURES )) && ! $in_auto_mode; then
       log_warn "Too many failures — handing control back to BMC."
       ipmi_set_auto
+      if [[ "${DISABLE_PCIE_COOLING_RESPONSE:-false}" == "true" ]]; then
+        ipmi_enable_pcie_cooling
+      fi
       in_auto_mode=true
     fi
 
@@ -284,6 +287,9 @@ while true; do
     if ! $in_auto_mode; then
       log_warn "Critical temp detected — handing control back to BMC."
       ipmi_set_auto
+      if [[ "${DISABLE_PCIE_COOLING_RESPONSE:-false}" == "true" ]]; then
+        ipmi_enable_pcie_cooling
+      fi
       in_auto_mode=true
     fi
     sleep "$POLL_INTERVAL"
@@ -294,6 +300,9 @@ while true; do
   if $in_auto_mode; then
     log "Temperatures normal — resuming manual control."
     ipmi_set_manual
+    if [[ "${DISABLE_PCIE_COOLING_RESPONSE:-false}" == "true" ]]; then
+      ipmi_disable_pcie_cooling
+    fi
     in_auto_mode=false
     last_speed=-1  # BMC may have changed speed; force re-apply
   fi
