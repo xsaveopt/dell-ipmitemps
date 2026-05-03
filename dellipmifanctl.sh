@@ -30,15 +30,30 @@ fi
 # shellcheck source=/dev/null
 source "$CONFIG_FILE"
 
+for cmd in ipmitool curl jq bc python3; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    log_error "Required command not found: $cmd"
+    exit 1
+  fi
+done
+
+if (( ${#FAN_CURVE[@]} == 0 )); then
+  log_error "FAN_CURVE is empty — define at least one 'celsius:percent' breakpoint in $CONFIG_FILE"
+  exit 1
+fi
+
+if (( ${#TEMP_SENSORS[@]} == 0 )); then
+  log_error "TEMP_SENSORS is empty — define at least one sensor in $CONFIG_FILE"
+  exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Datasource — temperature data fetching
 # Expects config variables to be set.
 
-# URL-encode a string. Prefers python3, falls back to a sed translation
-# of the characters that actually appear in PromQL.
+# URL-encode a string via python3.
 _url_encode() {
-  python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$1" 2>/dev/null \
-    || printf '%s' "$1" | sed 's/ /%20/g; s/{/%7B/g; s/}/%7D/g; s/"/%22/g; s/=/%3D/g; s/~/%7E/g; s/,/%2C/g'
+  python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$1"
 }
 
 # Parse a Prometheus-shape JSON response.
@@ -306,7 +321,7 @@ _restore_auto() {
     log "Restoring BMC PCIe cooling response."
     ipmi_enable_pcie_cooling
   fi
-  rm "$STATE_FILE" || true
+  rm -f "$STATE_FILE"
   exit 0
 }
 trap _restore_auto SIGTERM SIGINT SIGHUP
@@ -319,11 +334,22 @@ in_auto_mode=false
 last_speed=-1
 
 if [[ -f "$STATE_FILE" ]]; then
-  last_speed="$(< "$STATE_FILE")"
-  log "Restored last speed from state: ${last_speed}%"
+  saved="$(< "$STATE_FILE")"
+  if [[ "$saved" =~ ^[0-9]+$ ]] && (( saved >= 0 && saved <= 100 )); then
+    last_speed="$saved"
+    log "Restored last speed from state: ${last_speed}%"
+  else
+    log_warn "State file ${STATE_FILE} contains invalid value (${saved@Q}); ignoring."
+    rm -f "$STATE_FILE"
+  fi
 fi
 
 log "dellipmifanctl starting. Poll interval: ${POLL_INTERVAL}s. Sensors: ${#TEMP_SENSORS[@]}."
+
+if ! _ipmitool mc info >/dev/null 2>&1; then
+  log_error "Unable to reach BMC via ipmitool. Check IPMI_LOCAL/IPMI_HOST/IPMI_USER/IPMI_PASS and that ipmitool is functional."
+  exit 1
+fi
 
 if [[ "${DISABLE_PCIE_COOLING_RESPONSE:-false}" == "true" ]]; then
   log "Disabling BMC PCIe cooling response."
@@ -335,9 +361,8 @@ log "Manual fan control enabled."
 
 while true; do
   sensor_readings=()
+  fetch_failed=false
   critical_temp=false
-  sensors_total="${#TEMP_SENSORS[@]}"
-  sensors_failed=0
 
   for sensor_def in "${TEMP_SENSORS[@]}"; do
     IFS=':' read -r name query weight <<< "$sensor_def"
@@ -347,8 +372,8 @@ while true; do
     if ! fetch_temp "$query" temp fetch_reason; then
       log_warn "Sensor '${name}' fetch failed: ${fetch_reason}"
       log_warn "  query: ${query}"
-      sensors_failed=$(( sensors_failed + 1 ))
-      continue
+      fetch_failed=true
+      break
     fi
 
     log "  ${name}: ${temp}°C (weight ${weight})"
@@ -361,21 +386,19 @@ while true; do
     sensor_readings+=( "$name $temp $weight" )
   done
 
-  if (( sensors_failed > 0 && sensors_failed < sensors_total )); then
-    log_warn "${sensors_failed}/${sensors_total} sensors failed — proceeding with remaining ${#sensor_readings[@]}."
-  fi
-
-  if (( sensors_failed == sensors_total )); then
+  if $fetch_failed; then
     consecutive_failures=$(( consecutive_failures + 1 ))
-    log_warn "Fetch failed (${consecutive_failures}/${MAX_FETCH_FAILURES})."
 
-    if (( consecutive_failures >= MAX_FETCH_FAILURES )) && ! $in_auto_mode; then
-      log_warn "Too many failures — handing control back to BMC."
-      ipmi_set_auto
-      if [[ "${DISABLE_PCIE_COOLING_RESPONSE:-false}" == "true" ]]; then
-        ipmi_enable_pcie_cooling
+    if ! $in_auto_mode; then
+      log_warn "Fetch failed (${consecutive_failures}/${MAX_FETCH_FAILURES})."
+      if (( consecutive_failures >= MAX_FETCH_FAILURES )); then
+        log_warn "Too many failures — handing control back to BMC."
+        ipmi_set_auto
+        if [[ "${DISABLE_PCIE_COOLING_RESPONSE:-false}" == "true" ]]; then
+          ipmi_enable_pcie_cooling
+        fi
+        in_auto_mode=true
       fi
-      in_auto_mode=true
     fi
 
     sleep "$POLL_INTERVAL"
