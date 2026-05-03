@@ -335,8 +335,9 @@ log "Manual fan control enabled."
 
 while true; do
   sensor_readings=()
-  fetch_failed=false
   critical_temp=false
+  sensors_total="${#TEMP_SENSORS[@]}"
+  sensors_failed=0
 
   for sensor_def in "${TEMP_SENSORS[@]}"; do
     IFS=':' read -r name query weight <<< "$sensor_def"
@@ -346,8 +347,8 @@ while true; do
     if ! fetch_temp "$query" temp fetch_reason; then
       log_warn "Sensor '${name}' fetch failed: ${fetch_reason}"
       log_warn "  query: ${query}"
-      fetch_failed=true
-      break
+      sensors_failed=$(( sensors_failed + 1 ))
+      continue
     fi
 
     log "  ${name}: ${temp}°C (weight ${weight})"
@@ -360,7 +361,11 @@ while true; do
     sensor_readings+=( "$name $temp $weight" )
   done
 
-  if $fetch_failed; then
+  if (( sensors_failed > 0 && sensors_failed < sensors_total )); then
+    log_warn "${sensors_failed}/${sensors_total} sensors failed — proceeding with remaining ${#sensor_readings[@]}."
+  fi
+
+  if (( sensors_failed == sensors_total )); then
     consecutive_failures=$(( consecutive_failures + 1 ))
     log_warn "Fetch failed (${consecutive_failures}/${MAX_FETCH_FAILURES})."
 
