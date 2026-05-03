@@ -34,55 +34,144 @@ source "$CONFIG_FILE"
 # Datasource — temperature data fetching
 # Expects config variables to be set.
 
-# Query Prometheus directly via HTTP API.
-# Usage: _query_prometheus "promql"
-# Prints the scalar result or returns 1 on failure.
-_query_prometheus() {
-  local query="$1"
-  local encoded
-  encoded="$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$query" 2>/dev/null \
-    || printf '%s' "$query" | sed 's/ /%20/g; s/{/%7B/g; s/}/%7D/g; s/"/%22/g; s/=/%3D/g; s/~/%7E/g; s/,/%2C/g')"
+# URL-encode a string. Prefers python3, falls back to a sed translation
+# of the characters that actually appear in PromQL.
+_url_encode() {
+  python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$1" 2>/dev/null \
+    || printf '%s' "$1" | sed 's/ /%20/g; s/{/%7B/g; s/}/%7D/g; s/"/%22/g; s/=/%3D/g; s/~/%7E/g; s/,/%2C/g'
+}
 
-  local result
-  result="$(curl -sf --max-time 10 "${PROMETHEUS_URL}/api/v1/query?query=${encoded}")" || return 1
+# Parse a Prometheus-shape JSON response.
+# Distinguishes: invalid JSON, API-level error, empty result, non-numeric value.
+# Usage: _parse_prom_response "<body>" <value_var> <reason_var>
+# On success sets value_var; on failure sets reason_var and returns 1.
+_parse_prom_response() {
+  local body="$1" __value_var="$2" __reason_var="$3"
+  local status err_type err_msg result_count value
 
-  # Extract the first numeric value from the result vector/scalar
-  printf '%s' "$result" | jq -re '
+  if ! printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
+    printf -v "$__reason_var" 'response is not valid JSON (got %d bytes)' "${#body}"
+    return 1
+  fi
+
+  status="$(printf '%s' "$body" | jq -r '.status // "missing"')"
+  if [[ "$status" != "success" ]]; then
+    err_type="$(printf '%s' "$body" | jq -r '.errorType // "unknown"')"
+    err_msg="$(printf '%s' "$body" | jq -r '.error // "(no message)"')"
+    printf -v "$__reason_var" 'API returned status=%s errorType=%s error=%q' \
+      "$status" "$err_type" "$err_msg"
+    return 1
+  fi
+
+  result_count="$(printf '%s' "$body" | jq -r '.data.result | length')"
+  if [[ "$result_count" == "0" ]]; then
+    printf -v "$__reason_var" 'query matched no series (metric missing or label filters too narrow)'
+    return 1
+  fi
+
+  value="$(printf '%s' "$body" | jq -r '
     .data.result[0].value[1] //
     .data.result[0].values[-1][1] //
     empty
-  ' 2>/dev/null || return 1
+  ')"
+
+  if [[ -z "$value" ]]; then
+    printf -v "$__reason_var" 'series exists but has no sample value'
+    return 1
+  fi
+
+  if [[ "$value" == "NaN" || "$value" == "+Inf" || "$value" == "-Inf" ]]; then
+    printf -v "$__reason_var" 'value is non-numeric (%s) — sensor likely stale or absent' "$value"
+    return 1
+  fi
+
+  if ! [[ "$value" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+    printf -v "$__reason_var" 'value is not a number: %q' "$value"
+    return 1
+  fi
+
+  printf -v "$__value_var" '%s' "$value"
+}
+
+# HTTP fetch with status-code awareness. Captures body and HTTP code separately
+# so 4xx/5xx responses can be reported with their actual status.
+# Usage: _http_get <body_var> <code_var> <reason_var> <url> [curl-args...]
+# Returns 0 on 2xx, 1 otherwise (with reason set).
+_http_get() {
+  local __body_var="$1" __code_var="$2" __reason_var="$3" url="$4"
+  shift 4
+  local tmp curl_exit code body
+  tmp="$(mktemp)"
+
+  # shellcheck disable=SC2086
+  code="$(curl -s -o "$tmp" -w '%{http_code}' --max-time 10 "$@" "$url")"
+  curl_exit=$?
+  body="$(< "$tmp")"
+  rm -f "$tmp"
+
+  if (( curl_exit != 0 )); then
+    case "$curl_exit" in
+      6)  printf -v "$__reason_var" 'DNS resolution failed for %s' "$url" ;;
+      7)  printf -v "$__reason_var" 'connection refused / unreachable: %s' "$url" ;;
+      28) printf -v "$__reason_var" 'request timed out after 10s: %s' "$url" ;;
+      35|60|77) printf -v "$__reason_var" 'TLS error (curl exit %d): %s' "$curl_exit" "$url" ;;
+      *)  printf -v "$__reason_var" 'curl failed (exit %d): %s' "$curl_exit" "$url" ;;
+    esac
+    return 1
+  fi
+
+  if [[ "$code" != 2* ]]; then
+    case "$code" in
+      401|403) printf -v "$__reason_var" 'HTTP %s — authentication/authorization rejected' "$code" ;;
+      404)     printf -v "$__reason_var" 'HTTP 404 — endpoint not found (check URL/datasource UID)' ;;
+      429)     printf -v "$__reason_var" 'HTTP 429 — rate limited' ;;
+      5*)      printf -v "$__reason_var" 'HTTP %s — server error' "$code" ;;
+      *)       printf -v "$__reason_var" 'HTTP %s' "$code" ;;
+    esac
+    return 1
+  fi
+
+  printf -v "$__body_var" '%s' "$body"
+  printf -v "$__code_var" '%s' "$code"
+}
+
+# Query Prometheus directly via HTTP API.
+# Usage: _query_prometheus "promql" <value_var> <reason_var>
+_query_prometheus() {
+  local query="$1" __value_var="$2" __reason_var="$3"
+  local encoded body code
+  encoded="$(_url_encode "$query")"
+
+  _http_get body code "$__reason_var" \
+    "${PROMETHEUS_URL}/api/v1/query?query=${encoded}" || return 1
+
+  _parse_prom_response "$body" "$__value_var" "$__reason_var"
 }
 
 # Query via Grafana datasource proxy.
-# Usage: _query_grafana "promql"
+# Usage: _query_grafana "promql" <value_var> <reason_var>
 _query_grafana() {
-  local query="$1"
-  local encoded
-  encoded="$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$query" 2>/dev/null \
-    || printf '%s' "$query" | sed 's/ /%20/g; s/{/%7B/g; s/}/%7D/g; s/"/%22/g; s/=/%3D/g; s/~/%7E/g; s/,/%2C/g')"
+  local query="$1" __value_var="$2" __reason_var="$3"
+  local encoded body code
+  encoded="$(_url_encode "$query")"
 
-  local result
-  result="$(curl -sf --max-time 10 \
-    -H "Authorization: Bearer ${GRAFANA_TOKEN}" \
-    "${GRAFANA_URL}/api/datasources/proxy/uid/${GRAFANA_DATASOURCE_UID}/api/v1/query?query=${encoded}")" || return 1
+  _http_get body code "$__reason_var" \
+    "${GRAFANA_URL}/api/datasources/proxy/uid/${GRAFANA_DATASOURCE_UID}/api/v1/query?query=${encoded}" \
+    -H "Authorization: Bearer ${GRAFANA_TOKEN}" || return 1
 
-  printf '%s' "$result" | jq -re '
-    .data.result[0].value[1] //
-    .data.result[0].values[-1][1] //
-    empty
-  ' 2>/dev/null || return 1
+  _parse_prom_response "$body" "$__value_var" "$__reason_var"
 }
 
-# Public interface: fetch_temp "promql"
-# Dispatches to the configured backend. Prints value or returns 1.
+# Public interface: fetch_temp "promql" <value_var> <reason_var>
+# Dispatches to the configured backend. On success sets value_var; on failure
+# sets reason_var and returns 1.
 fetch_temp() {
-  local query="$1"
+  local query="$1" __value_var="$2" __reason_var="$3"
   case "$DATASOURCE_TYPE" in
-    prometheus) _query_prometheus "$query" ;;
-    grafana)    _query_grafana    "$query" ;;
+    prometheus) _query_prometheus "$query" "$__value_var" "$__reason_var" ;;
+    grafana)    _query_grafana    "$query" "$__value_var" "$__reason_var" ;;
     *)
-      log_error "Unknown DATASOURCE_TYPE: $DATASOURCE_TYPE"
+      printf -v "$__reason_var" 'unknown DATASOURCE_TYPE: %q' "$DATASOURCE_TYPE"
       return 1
       ;;
   esac
@@ -252,7 +341,14 @@ while true; do
   for sensor_def in "${TEMP_SENSORS[@]}"; do
     IFS=':' read -r name query weight <<< "$sensor_def"
 
-    temp="$(fetch_temp "$query")" || { fetch_failed=true; break; }
+    temp=""
+    fetch_reason=""
+    if ! fetch_temp "$query" temp fetch_reason; then
+      log_warn "Sensor '${name}' fetch failed: ${fetch_reason}"
+      log_warn "  query: ${query}"
+      fetch_failed=true
+      break
+    fi
 
     log "  ${name}: ${temp}°C (weight ${weight})"
 
