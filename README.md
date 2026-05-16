@@ -2,6 +2,14 @@
 
 Replaces Dell BMC automatic fan control with a temperature-driven loop. Reads temperatures from Prometheus or Grafana and sets fan speed via `ipmitool`.
 
+## Contents
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Updating](#updating)
+- [Uninstall](#uninstall)
+- [Configuration](#configuration)
+
 ## Requirements
 
 - Dell server with iDRAC
