@@ -278,7 +278,7 @@ curve_speed() {
       local s0="${speeds[$((i-1))]}" s1="${speeds[$i]}"
       # speed = s0 + (temp - t0) / (t1 - t0) * (s1 - s0)
       local result
-      result="$(echo "scale=0; $s0 + ($temp - $t0) / ($t1 - $t0) * ($s1 - $s0)" | bc -l)"
+      result="$(echo "scale=4; $s0 + ($temp - $t0) / ($t1 - $t0) * ($s1 - $s0)" | bc -l)"
       printf '%d' "${result%.*}"
       return
     fi
@@ -300,13 +300,18 @@ compute_fan_speed() {
 
     # Apply weight: scale speed toward minimum proportionally
     local weighted
-    weighted="$(echo "scale=0; $MIN_FAN_SPEED + ($raw_speed - $MIN_FAN_SPEED) * $weight" | bc -l)"
+    weighted="$(echo "scale=4; $MIN_FAN_SPEED + ($raw_speed - $MIN_FAN_SPEED) * $weight" | bc -l)"
     weighted="${weighted%.*}"
 
     if (( weighted > max_speed )); then
       max_speed="$weighted"
     fi
   done
+
+  # Weights > 1.0 can push the result above 100% — clamp before handing to ipmitool.
+  if (( max_speed > 100 )); then
+    max_speed=100
+  fi
 
   printf '%d' "$max_speed"
 }
@@ -315,6 +320,9 @@ compute_fan_speed() {
 # Signal handling — always restore auto mode on exit
 
 _restore_auto() {
+  # Push through failures: if one ipmitool call hiccups we still want the rest
+  # of the cleanup to run so the BMC reliably regains control.
+  set +e
   log "Restoring BMC automatic fan control."
   ipmi_set_auto
   if [[ "${DISABLE_PCIE_COOLING_RESPONSE:-false}" == "true" ]]; then
