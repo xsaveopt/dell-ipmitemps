@@ -32,6 +32,11 @@ fi
 install -m 644 "$SCRIPT_DIR/dellipmifanctl.service" "$SERVICE_FILE"
 systemctl daemon-reload
 
+if systemctl is-active --quiet dellipmifanctl; then
+  echo "  Restarting running service to pick up new binary..."
+  systemctl restart dellipmifanctl
+fi
+
 echo ""
 echo "Installation complete."
 echo ""
