@@ -1,0 +1,88 @@
+# dellipmifanctl configuration. Copy to /etc/dellipmifanctl/config.yaml and edit.
+
+# ---------------------------------------------------------------------------
+# Data source
+# ---------------------------------------------------------------------------
+datasource:
+  # "prometheus" queries Prometheus directly (recommended).
+  # "grafana"    queries via Grafana's datasource proxy (requires token + uid).
+  type: prometheus
+
+  prometheus:
+    url: http://localhost:9090
+
+  grafana:
+    url: http://localhost:3000
+    token: ""           # service account token
+    datasource_uid: ""  # UID from Grafana datasource settings
+
+# ---------------------------------------------------------------------------
+# IPMI target
+# ---------------------------------------------------------------------------
+ipmi:
+  # true  -> use the local IPMI device (/dev/ipmi0)
+  # false -> connect to a remote BMC over LAN+ (host/user/pass required)
+  local: true
+  host: ""
+  user: root
+  pass: ""
+
+# ---------------------------------------------------------------------------
+# Temperature sensors
+# ---------------------------------------------------------------------------
+# Each sensor pairs a PromQL query with a weight. Weight controls how
+# aggressively this sensor drives the fan: 1.0 uses the curve as-is, 0.8
+# softens the response. The highest weighted speed across sensors wins.
+# Examples use node_exporter metrics — adjust to match your environment.
+sensors:
+  - name: cpu
+    query: avg(node_hwmon_temp_celsius{chip=~"coretemp.*",sensor="temp1"})
+    weight: 1.0
+  - name: nvme
+    query: max(node_hwmon_temp_celsius{chip=~"nvme.*",sensor="temp1"})
+    weight: 0.8
+  - name: ambient
+    query: node_hwmon_temp_celsius{chip="acpitz",sensor="temp1"}
+    weight: 0.6
+
+# ---------------------------------------------------------------------------
+# Fan curve
+# ---------------------------------------------------------------------------
+# Breakpoints sorted ascending by temp. Fan speed is linearly interpolated
+# between breakpoints. Below the first point: that point's percent. Above the
+# last point: 100%.
+fan_curve:
+  - { temp: 30, percent: 10 }
+  - { temp: 50, percent: 30 }
+  - { temp: 65, percent: 55 }
+  - { temp: 75, percent: 80 }
+  - { temp: 82, percent: 100 }
+
+# ---------------------------------------------------------------------------
+# PCIe cooling response
+# ---------------------------------------------------------------------------
+# Dell BMCs detect unrecognised third-party PCIe cards (e.g. non-Dell GPUs) and
+# respond by ramping fans to ~100% regardless of actual temperature. Setting
+# this to true disables that behaviour at startup, letting dellipmifanctl manage
+# fan speed purely from temperature data.
+#
+# WARNING: only enable this if you have verified your fan curve provides
+# adequate cooling under full CPU + GPU load. Run extended stress tests first.
+# dellipmifanctl restores the default PCIe cooling response on shutdown.
+disable_pcie_cooling_response: false
+
+# ---------------------------------------------------------------------------
+# Safety and limits
+# ---------------------------------------------------------------------------
+# If any sensor exceeds this temperature, hand control back to BMC auto mode and
+# log a warning. Manual control resumes once temperatures fall back to normal.
+temp_critical: 90
+
+# Absolute floor — never command a speed below this percentage.
+min_fan_speed: 10
+
+# Seconds between each poll → compute → apply cycle.
+poll_interval: 30
+
+# Consecutive data-fetch failures before falling back to BMC auto mode.
+max_fetch_failures: 3
