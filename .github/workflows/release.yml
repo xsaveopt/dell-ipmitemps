@@ -42,11 +42,21 @@ jobs:
 
       - name: Cross-build linux/amd64+arm64
         run: |
+          mkdir -p dist
+          ver="dev-${GITHUB_SHA::7}"
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH=$arch \
-              go build -trimpath -ldflags "-s -w" \
-              -o /tmp/dellipmifanctl_${arch} .
+              go build -trimpath -ldflags "-s -w -X main.version=${ver}" \
+              -o dist/dellipmifanctl_linux_${arch} .
           done
+
+      - name: Upload dev build
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dellipmifanctl-dev-${{ github.sha }}
+          path: dist/dellipmifanctl_linux_*
+          retention-days: 14
 
   release:
     name: Publish release
