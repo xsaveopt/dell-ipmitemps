@@ -10,6 +10,7 @@
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Configuration](#configuration)
+- [Predictive mode](#predictive-mode)
 - [Safety behaviour](#safety-behaviour)
 
 ## How it works
@@ -49,6 +50,16 @@ Configuration lives in a YAML file, by default `/etc/dellipmifanctl/config.yaml`
 | `temp_critical` | Above this °C, hand control back to the BMC |
 | `disable_pcie_cooling_response` | Suppress the BMC's 100% ramp for third-party PCIe cards |
 | `min_fan_speed` / `poll_interval` / `max_fetch_failures` | Floor speed, poll cadence, failure tolerance |
+| `prediction` | Opt-in windowed+trend mode (off by default) |
+| `process_prediction` | Opt-in `/proc` learning (off by default) |
+
+## Predictive mode
+
+Both layers below are **opt-in and default off** — with neither configured the daemon behaves exactly as described above (instant readings → curve → speed).
+
+**Windowed + trend (`prediction`).** Instead of reacting to the latest sample, the daemon reads a short window of recent history and drives the curve off `max(quantile(window), last + trend·horizon)`. A high quantile means a brief outlier — say a 1-second NVMe spike that's gone before the next poll — never moves the target, while a genuine sustained rise still ramps the fans *early* via the trend term. The critical-temperature fallback also switches to a *sustained* check (`critical_dwell`), so a momentary blip past the limit won't bounce control to the BMC.
+
+**Process pre-emption (`process_prediction`).** The daemon watches the host's `/proc`, learns each process name's thermal signature over repeated runs (persisted to disk), and acts when a known one launches: a *sustained* load pre-warms the fans (raises a temporary floor) ahead of the heat, and a known *transient* holds the current speed steady through its spike instead of chasing it. A hold is time-bounded, broken the instant temperature climbs past what was learned, and always overridden by the critical fallback — it can delay a needless ramp but can never under-cool a real rise. Requires the daemon to run on the monitored host and to have write access to `model_path`.
 
 ## Safety behaviour
 

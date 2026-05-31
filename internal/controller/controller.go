@@ -13,15 +13,18 @@ import (
 	"github.com/sratabix/dell-ipmitemps/internal/curve"
 	"github.com/sratabix/dell-ipmitemps/internal/datasource"
 	"github.com/sratabix/dell-ipmitemps/internal/ipmi"
+	"github.com/sratabix/dell-ipmitemps/internal/predict"
+	"github.com/sratabix/dell-ipmitemps/internal/procwatch"
 )
 
 const stateFile = "/run/dellipmifanctl.state"
 
 type Controller struct {
-	cfg  *config.Config
-	ds   *datasource.Fetcher
-	ipmi *ipmi.Controller
-	log  *slog.Logger
+	cfg     *config.Config
+	ds      *datasource.Fetcher
+	ipmi    *ipmi.Controller
+	watcher *procwatch.Watcher
+	log     *slog.Logger
 
 	consecutiveFailures int
 	inAutoMode          bool
@@ -29,13 +32,26 @@ type Controller struct {
 }
 
 func New(cfg *config.Config, log *slog.Logger) *Controller {
-	return &Controller{
+	c := &Controller{
 		cfg:       cfg,
 		ds:        datasource.New(cfg.Datasource),
 		ipmi:      ipmi.New(cfg.IPMI),
 		log:       log,
 		lastSpeed: -1,
 	}
+	if cfg.ProcessPrediction.Enabled {
+		pp := cfg.ProcessPrediction
+		c.watcher = procwatch.New(procwatch.Options{
+			ProcPath:        pp.ProcPath,
+			ModelPath:       pp.ModelPath,
+			MinObservations: pp.MinObservations,
+			ImpactThreshold: pp.ImpactThreshold,
+			PreemptTTL:      pp.PreemptTTL.Std(),
+			HoldMargin:      pp.HoldMargin,
+			Decay:           pp.Decay,
+		}, cfg.FanCurve, cfg.MinFanSpeed, log)
+	}
+	return c
 }
 
 func (c *Controller) Run(ctx context.Context) error {
@@ -78,19 +94,20 @@ func (c *Controller) Run(ctx context.Context) error {
 func (c *Controller) poll(ctx context.Context) {
 	readings := make([]curve.Reading, 0, len(c.cfg.Sensors))
 	critical := false
+	maxTemp := 0.0
 
 	for _, s := range c.cfg.Sensors {
-		temp, err := c.ds.FetchTemp(ctx, s.Query)
+		temp, crit, err := c.readSensor(ctx, s)
 		if err != nil {
 			c.log.Warn("sensor fetch failed", "sensor", s.Name, "reason", err.Error(), "query", s.Query)
 			c.handleFetchFailure(ctx)
 			return
 		}
-		c.log.Info("sensor reading", "sensor", s.Name, "temp_c", temp, "weight", s.Weight)
-
-		if temp >= c.cfg.TempCritical {
-			c.log.Warn("critical temperature", "sensor", s.Name, "temp_c", temp, "limit_c", c.cfg.TempCritical)
+		if crit {
 			critical = true
+		}
+		if temp > maxTemp {
+			maxTemp = temp
 		}
 		readings = append(readings, curve.Reading{Name: s.Name, Temp: temp, Weight: s.Weight})
 	}
@@ -118,6 +135,19 @@ func (c *Controller) poll(ctx context.Context) {
 	}
 
 	target := curve.ComputeFanSpeed(c.cfg.FanCurve, c.cfg.MinFanSpeed, readings)
+
+	if c.watcher != nil {
+		c.watcher.Poll(time.Now(), maxTemp)
+		if held, ok := c.watcher.Hold(maxTemp); ok && held < target {
+			c.log.Info("holding fan speed for known transient", "percent", held, "curve_target", target)
+			target = held
+		}
+		if floor := c.watcher.Floor(); floor > target {
+			c.log.Info("raising fan floor for predicted load", "percent", floor, "curve_target", target)
+			target = floor
+		}
+	}
+
 	if target == c.lastSpeed {
 		c.log.Debug("fan speed unchanged", "percent", target)
 		return
@@ -130,6 +160,35 @@ func (c *Controller) poll(ctx context.Context) {
 	}
 	c.lastSpeed = target
 	c.saveState(target)
+}
+
+func (c *Controller) readSensor(ctx context.Context, s config.Sensor) (float64, bool, error) {
+	if !c.cfg.Prediction.Enabled {
+		temp, err := c.ds.FetchTemp(ctx, s.Query)
+		if err != nil {
+			return 0, false, err
+		}
+		c.log.Info("sensor reading", "sensor", s.Name, "temp_c", temp, "weight", s.Weight)
+		crit := temp >= c.cfg.TempCritical
+		if crit {
+			c.log.Warn("critical temperature", "sensor", s.Name, "temp_c", temp, "limit_c", c.cfg.TempCritical)
+		}
+		return temp, crit, nil
+	}
+
+	p := c.cfg.Prediction
+	samples, err := c.ds.FetchRange(ctx, s.Query, p.Lookback.Std(), p.Step.Std())
+	if err != nil {
+		return 0, false, err
+	}
+	eff := predict.Effective(samples, p.Quantile, p.TrendHorizon.Std().Seconds())
+	crit := predict.SustainedAbove(samples, c.cfg.TempCritical, p.CriticalDwell.Std().Seconds())
+	c.log.Info("sensor reading", "sensor", s.Name,
+		"effective_c", eff, "last_c", predict.Last(samples), "samples", len(samples), "weight", s.Weight)
+	if crit {
+		c.log.Warn("critical temperature sustained", "sensor", s.Name, "limit_c", c.cfg.TempCritical, "dwell_s", p.CriticalDwell.Std().Seconds())
+	}
+	return eff, crit, nil
 }
 
 func (c *Controller) handleFetchFailure(ctx context.Context) {

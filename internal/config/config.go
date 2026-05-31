@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -28,6 +29,46 @@ type Config struct {
 	MinFanSpeed      int     `yaml:"min_fan_speed"`
 	PollInterval     int     `yaml:"poll_interval"`
 	MaxFetchFailures int     `yaml:"max_fetch_failures"`
+
+	Prediction        Prediction        `yaml:"prediction"`
+	ProcessPrediction ProcessPrediction `yaml:"process_prediction"`
+}
+
+type Duration time.Duration
+
+func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	var s string
+	if err := value.Decode(&s); err != nil {
+		return err
+	}
+	parsed, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	*d = Duration(parsed)
+	return nil
+}
+
+func (d Duration) Std() time.Duration { return time.Duration(d) }
+
+type Prediction struct {
+	Enabled       bool     `yaml:"enabled"`
+	Lookback      Duration `yaml:"lookback"`
+	Step          Duration `yaml:"step"`
+	Quantile      float64  `yaml:"quantile"`
+	TrendHorizon  Duration `yaml:"trend_horizon"`
+	CriticalDwell Duration `yaml:"critical_dwell"`
+}
+
+type ProcessPrediction struct {
+	Enabled         bool     `yaml:"enabled"`
+	ProcPath        string   `yaml:"proc_path"`
+	ModelPath       string   `yaml:"model_path"`
+	MinObservations int      `yaml:"min_observations"`
+	ImpactThreshold float64  `yaml:"impact_threshold"`
+	PreemptTTL      Duration `yaml:"preempt_ttl"`
+	HoldMargin      float64  `yaml:"hold_margin"`
+	Decay           float64  `yaml:"decay"`
 }
 
 type Datasource struct {
@@ -97,6 +138,48 @@ func (c *Config) applyDefaults() {
 	if c.IPMI.User == "" {
 		c.IPMI.User = "root"
 	}
+
+	if c.Prediction.Enabled {
+		if c.Prediction.Lookback == 0 {
+			c.Prediction.Lookback = Duration(120 * time.Second)
+		}
+		if c.Prediction.Step == 0 {
+			c.Prediction.Step = Duration(10 * time.Second)
+		}
+		if c.Prediction.Quantile == 0 {
+			c.Prediction.Quantile = 0.9
+		}
+		if c.Prediction.TrendHorizon == 0 {
+			c.Prediction.TrendHorizon = Duration(30 * time.Second)
+		}
+		if c.Prediction.CriticalDwell == 0 {
+			c.Prediction.CriticalDwell = Duration(15 * time.Second)
+		}
+	}
+
+	if c.ProcessPrediction.Enabled {
+		if c.ProcessPrediction.ProcPath == "" {
+			c.ProcessPrediction.ProcPath = "/proc"
+		}
+		if c.ProcessPrediction.ModelPath == "" {
+			c.ProcessPrediction.ModelPath = "/var/lib/dellipmifanctl/procmodel.json"
+		}
+		if c.ProcessPrediction.MinObservations == 0 {
+			c.ProcessPrediction.MinObservations = 3
+		}
+		if c.ProcessPrediction.ImpactThreshold == 0 {
+			c.ProcessPrediction.ImpactThreshold = 3.0
+		}
+		if c.ProcessPrediction.PreemptTTL == 0 {
+			c.ProcessPrediction.PreemptTTL = Duration(60 * time.Second)
+		}
+		if c.ProcessPrediction.HoldMargin == 0 {
+			c.ProcessPrediction.HoldMargin = 1.25
+		}
+		if c.ProcessPrediction.Decay == 0 {
+			c.ProcessPrediction.Decay = 0.3
+		}
+	}
 }
 
 func (c *Config) validate() error {
@@ -152,6 +235,47 @@ func (c *Config) validate() error {
 	}
 	if c.MaxFetchFailures <= 0 {
 		return fmt.Errorf("max_fetch_failures must be greater than 0")
+	}
+
+	if c.Prediction.Enabled {
+		p := c.Prediction
+		if p.Lookback <= 0 {
+			return errors.New("prediction.lookback must be greater than 0")
+		}
+		if p.Step <= 0 || p.Step > p.Lookback {
+			return errors.New("prediction.step must be greater than 0 and not exceed prediction.lookback")
+		}
+		if p.Quantile <= 0 || p.Quantile > 1 {
+			return fmt.Errorf("prediction.quantile %g out of range (0,1]", p.Quantile)
+		}
+		if p.TrendHorizon < 0 {
+			return errors.New("prediction.trend_horizon must not be negative")
+		}
+		if p.CriticalDwell < 0 {
+			return errors.New("prediction.critical_dwell must not be negative")
+		}
+	}
+
+	if c.ProcessPrediction.Enabled {
+		pp := c.ProcessPrediction
+		if pp.ProcPath == "" || pp.ModelPath == "" {
+			return errors.New("process_prediction requires proc_path and model_path")
+		}
+		if pp.MinObservations < 1 {
+			return errors.New("process_prediction.min_observations must be at least 1")
+		}
+		if pp.ImpactThreshold <= 0 {
+			return errors.New("process_prediction.impact_threshold must be greater than 0")
+		}
+		if pp.PreemptTTL <= 0 {
+			return errors.New("process_prediction.preempt_ttl must be greater than 0")
+		}
+		if pp.HoldMargin < 1 {
+			return errors.New("process_prediction.hold_margin must be at least 1")
+		}
+		if pp.Decay <= 0 || pp.Decay > 1 {
+			return fmt.Errorf("process_prediction.decay %g out of range (0,1]", pp.Decay)
+		}
 	}
 	return nil
 }

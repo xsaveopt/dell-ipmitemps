@@ -86,3 +86,45 @@ poll_interval: 30
 
 # Consecutive data-fetch failures before falling back to BMC auto mode.
 max_fetch_failures: 3
+
+# ---------------------------------------------------------------------------
+# Prediction (optional, default off)
+# ---------------------------------------------------------------------------
+# When enabled, fans are driven off a short window of recent history instead of
+# the latest instantaneous sample. A robust quantile over the window rejects
+# brief spikes (e.g. a 1-second NVMe blip) by construction, while a short
+# linear-trend extrapolation still ramps early on a genuine sustained rise.
+# Disabled -> behaviour is identical to instant-query mode.
+prediction:
+  enabled: false
+  lookback: 120s        # window of history queried each poll (Prometheus query_range)
+  step: 10s             # query_range resolution; should match ~scrape interval
+  quantile: 0.9         # robust aggregate over the window (lower = more spike-tolerant)
+  trend_horizon: 30s    # how far ahead the linear trend is extrapolated
+  # When prediction is on, the critical fallback uses a *sustained* check: a
+  # temperature must stay at/above temp_critical for this long before handing
+  # control back to the BMC, so a momentary blip past the limit is ignored.
+  critical_dwell: 15s
+
+# ---------------------------------------------------------------------------
+# Process pre-emption (optional, default off)
+# ---------------------------------------------------------------------------
+# Watches local /proc for newly-spawned processes and learns each process
+# name's thermal signature over time (persisted to model_path):
+#   - sustained load  -> pre-warm: raise a temporary fan floor when it reappears
+#   - brief transient -> hold: keep the current speed steady through the spike
+# A hold is time-bounded AND broken the instant temperature exceeds the learned
+# envelope, and is always overridden by the critical fallback — it can delay a
+# ramp on a known transient but can never under-cool a real sustained rise.
+#
+# Requires the daemon to run ON the monitored host (it reads that host's /proc)
+# and to have write access to model_path.
+process_prediction:
+  enabled: false
+  proc_path: /proc
+  model_path: /var/lib/dellipmifanctl/procmodel.json
+  min_observations: 3   # confirmations before a process is trusted to act on
+  impact_threshold: 3.0 # minimum learned °C rise before a process is acted on
+  preempt_ttl: 60s      # max lifetime of a pre-warm / hold hint
+  hold_margin: 1.25     # break a hold once temp exceeds learned peak * this
+  decay: 0.3            # weight given to each new observation (EWMA)
