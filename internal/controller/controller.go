@@ -28,6 +28,7 @@ type Controller struct {
 
 	consecutiveFailures int
 	inAutoMode          bool
+	inFailSafe          bool
 	lastSpeed           int
 }
 
@@ -134,6 +135,12 @@ func (c *Controller) poll(ctx context.Context) {
 		c.lastSpeed = -1
 	}
 
+	if c.inFailSafe {
+		c.log.Info("sensor data restored — resuming curve control")
+		c.inFailSafe = false
+		c.lastSpeed = -1
+	}
+
 	target := curve.ComputeFanSpeed(c.cfg.FanCurve, c.cfg.MinFanSpeed, readings)
 
 	if c.watcher != nil {
@@ -193,13 +200,44 @@ func (c *Controller) readSensor(ctx context.Context, s config.Sensor) (float64, 
 
 func (c *Controller) handleFetchFailure(ctx context.Context) {
 	c.consecutiveFailures++
-	if c.inAutoMode {
+	c.log.Warn("fetch failed", "failures", c.consecutiveFailures, "max", c.cfg.MaxFetchFailures)
+	if c.inFailSafe || c.consecutiveFailures < c.cfg.MaxFetchFailures {
 		return
 	}
-	c.log.Warn("fetch failed", "failures", c.consecutiveFailures, "max", c.cfg.MaxFetchFailures)
-	if c.consecutiveFailures >= c.cfg.MaxFetchFailures {
-		c.fallbackToBMC(ctx, "too many consecutive fetch failures")
+
+	speed := c.cfg.FetchFailureFanSpeed
+	c.log.Warn("too many consecutive fetch failures — pinning fans to fail-safe speed", "percent", speed)
+	if err := c.ipmi.SetManual(ctx); err != nil {
+		c.log.Warn("failed to ensure manual fan control for fail-safe", "err", err)
 	}
+	if err := c.ipmi.SetSpeed(ctx, speed); err != nil {
+		c.log.Warn("failed to set fail-safe fan speed", "err", err)
+		return
+	}
+	c.inAutoMode = false
+	c.inFailSafe = true
+	c.lastSpeed = speed
+	c.saveState(speed)
+}
+
+func (c *Controller) handBackToBMC(ctx context.Context) {
+	c.withRetry("set BMC auto mode", func() error { return c.ipmi.SetAuto(ctx) })
+	c.withRetry("restore BMC PCIe cooling response", func() error { return c.ipmi.EnablePCIeCooling(ctx) })
+}
+
+func (c *Controller) withRetry(op string, fn func() error) {
+	const attempts = 3
+	var err error
+	for i := 1; i <= attempts; i++ {
+		if err = fn(); err == nil {
+			return
+		}
+		c.log.Warn("ipmi command failed, retrying", "op", op, "attempt", i, "err", err)
+		if i < attempts {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	c.log.Error("ipmi command failed after retries", "op", op, "err", err)
 }
 
 func (c *Controller) fallbackToBMC(ctx context.Context, reason string) {
@@ -207,16 +245,9 @@ func (c *Controller) fallbackToBMC(ctx context.Context, reason string) {
 		return
 	}
 	c.log.Warn("handing control back to BMC", "reason", reason)
-	if err := c.ipmi.SetAuto(ctx); err != nil {
-		c.log.Warn("failed to set auto mode", "err", err)
-		return
-	}
-	if c.cfg.DisablePCIeCoolingResponse {
-		if err := c.ipmi.EnablePCIeCooling(ctx); err != nil {
-			c.log.Warn("failed to restore PCIe cooling response", "err", err)
-		}
-	}
+	c.handBackToBMC(ctx)
 	c.inAutoMode = true
+	c.inFailSafe = false
 }
 
 func (c *Controller) restoreAuto() {
@@ -224,15 +255,7 @@ func (c *Controller) restoreAuto() {
 	defer cancel()
 
 	c.log.Info("restoring BMC automatic fan control")
-	if err := c.ipmi.SetAuto(ctx); err != nil {
-		c.log.Warn("failed to restore auto mode", "err", err)
-	}
-	if c.cfg.DisablePCIeCoolingResponse {
-		c.log.Info("restoring BMC PCIe cooling response")
-		if err := c.ipmi.EnablePCIeCooling(ctx); err != nil {
-			c.log.Warn("failed to restore PCIe cooling response", "err", err)
-		}
-	}
+	c.handBackToBMC(ctx)
 	if err := os.Remove(stateFile); err != nil && !os.IsNotExist(err) {
 		c.log.Warn("failed to remove state file", "file", stateFile, "err", err)
 	}

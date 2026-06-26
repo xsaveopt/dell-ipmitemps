@@ -50,6 +50,7 @@ Configuration lives in a YAML file, by default `/etc/dellipmifanctl/config.yaml`
 | `temp_critical` | Above this °C, hand control back to the BMC |
 | `disable_pcie_cooling_response` | Suppress the BMC's 100% ramp for third-party PCIe cards |
 | `min_fan_speed` / `poll_interval` / `max_fetch_failures` | Floor speed, poll cadence, failure tolerance |
+| `fetch_failure_fan_speed` | Fail-safe speed to pin fans to on sustained data loss (default 100) |
 | `prediction` | Opt-in windowed+trend mode (off by default) |
 | `process_prediction` | Opt-in `/proc` learning (off by default) |
 
@@ -63,4 +64,4 @@ Both layers below are **opt-in and default off** — with neither configured the
 
 ## Safety behaviour
 
-If the daemon cannot reach the datasource for `max_fetch_failures` consecutive polls, or any sensor exceeds `temp_critical`, it hands control back to BMC automatic fan control and keeps retrying; manual control resumes once readings return to normal. On `SIGINT`/`SIGTERM`/`SIGHUP` it always restores BMC auto mode (and the default PCIe cooling response, if it was disabled) before exiting.
+If the daemon cannot reach the datasource for `max_fetch_failures` consecutive polls, it keeps manual control and pins the fans to `fetch_failure_fan_speed` (100% by default) rather than handing back to the BMC — the BMC can't see the sensors that just went dark, so the safe move is full cooling until data returns. If instead any sensor exceeds `temp_critical`, it does hand control back to BMC automatic fan control and keeps retrying. Either way, manual curve control resumes once readings return to normal. On `SIGINT`/`SIGTERM`/`SIGHUP`, and whenever it hands back to the BMC, it restores BMC auto mode and re-enables the default PCIe cooling response (retried, so a transient `ipmitool` hiccup can't leave the box stuck in manual).

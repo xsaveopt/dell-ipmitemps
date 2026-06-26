@@ -25,10 +25,11 @@ type Config struct {
 
 	DisablePCIeCoolingResponse bool `yaml:"disable_pcie_cooling_response"`
 
-	TempCritical     float64 `yaml:"temp_critical"`
-	MinFanSpeed      int     `yaml:"min_fan_speed"`
-	PollInterval     int     `yaml:"poll_interval"`
-	MaxFetchFailures int     `yaml:"max_fetch_failures"`
+	TempCritical         float64 `yaml:"temp_critical"`
+	MinFanSpeed          int     `yaml:"min_fan_speed"`
+	PollInterval         int     `yaml:"poll_interval"`
+	MaxFetchFailures     int     `yaml:"max_fetch_failures"`
+	FetchFailureFanSpeed int     `yaml:"fetch_failure_fan_speed"`
 
 	Prediction        Prediction        `yaml:"prediction"`
 	ProcessPrediction ProcessPrediction `yaml:"process_prediction"`
@@ -131,6 +132,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.MaxFetchFailures == 0 {
 		c.MaxFetchFailures = 3
+	}
+	if c.FetchFailureFanSpeed == 0 {
+		c.FetchFailureFanSpeed = 100
 	}
 	if c.TempCritical == 0 {
 		c.TempCritical = 90
@@ -235,6 +239,9 @@ func (c *Config) validate() error {
 	}
 	if c.MaxFetchFailures <= 0 {
 		return fmt.Errorf("max_fetch_failures must be greater than 0")
+	}
+	if c.FetchFailureFanSpeed < 1 || c.FetchFailureFanSpeed > 100 {
+		return fmt.Errorf("fetch_failure_fan_speed %d out of range 1-100", c.FetchFailureFanSpeed)
 	}
 
 	if c.Prediction.Enabled {

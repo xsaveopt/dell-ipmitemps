@@ -84,8 +84,14 @@ min_fan_speed: 10
 # Seconds between each poll → compute → apply cycle.
 poll_interval: 30
 
-# Consecutive data-fetch failures before falling back to BMC auto mode.
+# Consecutive data-fetch failures before failing safe. On data loss the daemon
+# stays in manual control and pins the fans to fetch_failure_fan_speed rather
+# than handing back to the BMC, since the BMC cannot see the lost sensors.
 max_fetch_failures: 3
+
+# Fan speed (percent) to pin fans to once max_fetch_failures is reached, until
+# sensor data returns. Defaults to 100 — full cooling while flying blind.
+fetch_failure_fan_speed: 100
 
 # ---------------------------------------------------------------------------
 # Prediction (optional, default off)
