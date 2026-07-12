@@ -31,7 +31,7 @@ Download the latest binary for your architecture and make it executable:
 
 ```bash
 sudo curl -fL -o /usr/local/bin/dellipmifanctl \
-  https://github.com/sratabix/dell-ipmitemps/releases/latest/download/dellipmifanctl_linux_amd64
+  https://github.com/xsaveopt/dell-ipmitemps/releases/latest/download/dellipmifanctl_linux_amd64
 sudo chmod +x /usr/local/bin/dellipmifanctl
 ```
 

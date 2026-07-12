@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/sratabix/dell-ipmitemps/internal/config"
+	"github.com/xsaveopt/dell-ipmitemps/internal/config"
 )
 
 type Fetcher struct {

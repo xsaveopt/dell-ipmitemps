@@ -4,7 +4,7 @@ import (
 	"math"
 	"sort"
 
-	"github.com/sratabix/dell-ipmitemps/internal/datasource"
+	"github.com/xsaveopt/dell-ipmitemps/internal/datasource"
 )
 
 func Quantile(samples []datasource.Sample, q float64) float64 {

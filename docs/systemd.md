@@ -22,7 +22,7 @@ Drop at `/etc/systemd/system/dellipmifanctl.service`:
 ```ini
 [Unit]
 Description=Dell IPMI Fan Temperature Controller
-Documentation=https://github.com/sratabix/dell-ipmitemps
+Documentation=https://github.com/xsaveopt/dell-ipmitemps
 After=network-online.target
 Wants=network-online.target
 # Local mode only: wait for the IPMI device node.

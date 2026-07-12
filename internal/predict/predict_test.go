@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/sratabix/dell-ipmitemps/internal/datasource"
+	"github.com/xsaveopt/dell-ipmitemps/internal/datasource"
 )
 
 const step = 10.0

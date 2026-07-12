@@ -9,8 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/sratabix/dell-ipmitemps/internal/config"
-	"github.com/sratabix/dell-ipmitemps/internal/controller"
+	"github.com/xsaveopt/dell-ipmitemps/internal/config"
+	"github.com/xsaveopt/dell-ipmitemps/internal/controller"
 )
 
 var version = "dev"

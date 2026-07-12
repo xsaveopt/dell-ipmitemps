@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/sratabix/dell-ipmitemps/internal/config"
-	"github.com/sratabix/dell-ipmitemps/internal/curve"
+	"github.com/xsaveopt/dell-ipmitemps/internal/config"
+	"github.com/xsaveopt/dell-ipmitemps/internal/curve"
 )
 
 const (

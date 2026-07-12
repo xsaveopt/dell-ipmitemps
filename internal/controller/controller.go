@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sratabix/dell-ipmitemps/internal/config"
-	"github.com/sratabix/dell-ipmitemps/internal/curve"
-	"github.com/sratabix/dell-ipmitemps/internal/datasource"
-	"github.com/sratabix/dell-ipmitemps/internal/ipmi"
-	"github.com/sratabix/dell-ipmitemps/internal/predict"
-	"github.com/sratabix/dell-ipmitemps/internal/procwatch"
+	"github.com/xsaveopt/dell-ipmitemps/internal/config"
+	"github.com/xsaveopt/dell-ipmitemps/internal/curve"
+	"github.com/xsaveopt/dell-ipmitemps/internal/datasource"
+	"github.com/xsaveopt/dell-ipmitemps/internal/ipmi"
+	"github.com/xsaveopt/dell-ipmitemps/internal/predict"
+	"github.com/xsaveopt/dell-ipmitemps/internal/procwatch"
 )
 
 const stateFile = "/run/dellipmifanctl.state"

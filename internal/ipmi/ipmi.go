@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/sratabix/dell-ipmitemps/internal/config"
+	"github.com/xsaveopt/dell-ipmitemps/internal/config"
 )
 
 type Controller struct {

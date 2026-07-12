@@ -1,6 +1,6 @@
 package curve
 
-import "github.com/sratabix/dell-ipmitemps/internal/config"
+import "github.com/xsaveopt/dell-ipmitemps/internal/config"
 
 type Reading struct {
 	Name   string

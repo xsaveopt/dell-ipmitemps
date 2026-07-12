@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sratabix/dell-ipmitemps/internal/config"
+	"github.com/xsaveopt/dell-ipmitemps/internal/config"
 )
 
 func curvePoints() []config.CurvePoint {

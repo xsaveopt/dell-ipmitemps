@@ -1,4 +1,4 @@
-module github.com/sratabix/dell-ipmitemps
+module github.com/xsaveopt/dell-ipmitemps
 
 go 1.26.0
 
