@@ -73,6 +73,44 @@ func TestEffectiveSustainedRiseRampsEarly(t *testing.T) {
 	}
 }
 
+func TestEffectiveSpikeOnNewestSampleIgnored(t *testing.T) {
+	s := mk(40, 40, 41, 40, 39, 40, 41, 40, 40, 75)
+	if got := Effective(s, 0.9, 30); got > 50 {
+		t.Errorf("effective = %v, a spike on the last sample should not drive it up", got)
+	}
+}
+
+func TestEffectiveStepChangeIsFollowed(t *testing.T) {
+	// Not a blip: the temperature steps up and stays there for most of the window.
+	s := mk(40, 40, 41, 62, 63, 62, 63, 64, 63, 64)
+	if got := Effective(s, 0.6, 30); got < 60 {
+		t.Errorf("effective = %v, a sustained step should be followed (>=60)", got)
+	}
+}
+
+func TestTrendEndpointResistsOutlier(t *testing.T) {
+	flat := mk(40, 40, 40, 40, 40, 40, 40, 40, 40, 40)
+	spiked := mk(40, 40, 40, 40, 40, 40, 40, 40, 40, 80)
+	_, clean := Trend(flat)
+	sl, dirty := Trend(spiked)
+	if math.Abs(dirty-clean) > 1 {
+		t.Errorf("fitted end moved from %v to %v on one outlier", clean, dirty)
+	}
+	if sl > 0.01 {
+		t.Errorf("slope = %v, one outlier should not create a trend", sl)
+	}
+}
+
+func TestTrendTracksSustainedClimb(t *testing.T) {
+	sl, end := Trend(mk(40, 44, 48, 52, 56, 60))
+	if !approx(sl, 0.4) {
+		t.Errorf("slope = %v, want 0.4", sl)
+	}
+	if !approx(end, 60) {
+		t.Errorf("fitted end = %v, want 60", end)
+	}
+}
+
 func TestSustainedAbove(t *testing.T) {
 	// Brief spike: only one recent sample above 90 → not sustained.
 	brief := mk(40, 40, 40, 40, 95)

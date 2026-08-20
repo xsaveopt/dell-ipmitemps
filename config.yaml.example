@@ -98,19 +98,36 @@ fetch_failure_fan_speed: 100
 # ---------------------------------------------------------------------------
 # When enabled, fans are driven off a short window of recent history instead of
 # the latest instantaneous sample. A robust quantile over the window rejects
-# brief spikes (e.g. a 1-second NVMe blip) by construction, while a short
-# linear-trend extrapolation still ramps early on a genuine sustained rise.
+# brief spikes (e.g. a 1-second NVMe blip) by construction, while a robust
+# (Theil-Sen) trend still ramps early on a genuine sustained rise. Neither the
+# quantile nor the trend endpoint is anchored to the newest sample, so a blip on
+# the most recent scrape cannot drag the fans up on its own.
 # Disabled -> behaviour is identical to instant-query mode.
 prediction:
   enabled: false
   lookback: 120s        # window of history queried each poll (Prometheus query_range)
   step: 10s             # query_range resolution; should match ~scrape interval
-  quantile: 0.9         # robust aggregate over the window (lower = more spike-tolerant)
-  trend_horizon: 30s    # how far ahead the linear trend is extrapolated
+  quantile: 0.6         # robust aggregate over the window (lower = more spike-tolerant)
+  trend_horizon: 30s    # how far ahead the trend is extrapolated
   # When prediction is on, the critical fallback uses a *sustained* check: a
   # temperature must stay at/above temp_critical for this long before handing
   # control back to the BMC, so a momentary blip past the limit is ignored.
   critical_dwell: 15s
+
+# ---------------------------------------------------------------------------
+# Output smoothing (optional, default off)
+# ---------------------------------------------------------------------------
+# Prediction smooths the temperature going in; this smooths the fan speed coming
+# out, so small oscillations around a breakpoint stop translating into audible
+# steps. Deliberately asymmetric: rises are applied in full (max_step_up 100),
+# falls are rate-limited, and anything at or above urgent_temp bypasses the whole
+# block so a real thermal event is never delayed.
+smoothing:
+  enabled: false
+  deadband: 3           # ignore target changes smaller than this many percent
+  max_step_up: 100      # max percent increase per poll; 100 = never limit a rise
+  max_step_down: 5      # max percent decrease per poll
+  urgent_temp: 80       # at/above this temperature, apply the target immediately
 
 # ---------------------------------------------------------------------------
 # Process pre-emption (optional, default off)

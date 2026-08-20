@@ -143,16 +143,26 @@ func (c *Controller) poll(ctx context.Context) {
 
 	target := curve.ComputeFanSpeed(c.cfg.FanCurve, c.cfg.MinFanSpeed, readings)
 
+	floor := c.cfg.MinFanSpeed
 	if c.watcher != nil {
 		c.watcher.Poll(time.Now(), maxTemp)
 		if held, ok := c.watcher.Hold(maxTemp); ok && held < target {
 			c.log.Info("holding fan speed for known transient", "percent", held, "curve_target", target)
 			target = held
 		}
-		if floor := c.watcher.Floor(); floor > target {
-			c.log.Info("raising fan floor for predicted load", "percent", floor, "curve_target", target)
-			target = floor
+		if f := c.watcher.Floor(); f > target {
+			c.log.Info("raising fan floor for predicted load", "percent", f, "curve_target", target)
+			target = f
+			floor = f
 		}
+	}
+
+	if smoothed := c.smooth(target, maxTemp); smoothed != target {
+		c.log.Info("smoothing fan speed change", "applied", smoothed, "raw_target", target, "last", c.lastSpeed)
+		target = smoothed
+	}
+	if target < floor {
+		target = floor
 	}
 
 	if target == c.lastSpeed {
@@ -167,6 +177,31 @@ func (c *Controller) poll(ctx context.Context) {
 	}
 	c.lastSpeed = target
 	c.saveState(target)
+}
+
+func (c *Controller) smooth(target int, maxTemp float64) int {
+	s := c.cfg.Smoothing
+	if !s.Enabled || c.lastSpeed < 0 || maxTemp >= s.UrgentTemp {
+		return target
+	}
+	delta := target - c.lastSpeed
+	switch {
+	case delta > 0:
+		if delta <= s.Deadband {
+			return c.lastSpeed
+		}
+		if delta > s.MaxStepUp {
+			return c.lastSpeed + s.MaxStepUp
+		}
+	case delta < 0:
+		if -delta <= s.Deadband {
+			return c.lastSpeed
+		}
+		if -delta > s.MaxStepDown {
+			return c.lastSpeed - s.MaxStepDown
+		}
+	}
+	return target
 }
 
 func (c *Controller) readSensor(ctx context.Context, s config.Sensor) (float64, bool, error) {

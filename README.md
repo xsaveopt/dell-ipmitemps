@@ -52,13 +52,16 @@ Configuration lives in a YAML file, by default `/etc/dellipmifanctl/config.yaml`
 | `min_fan_speed` / `poll_interval` / `max_fetch_failures` | Floor speed, poll cadence, failure tolerance |
 | `fetch_failure_fan_speed` | Fail-safe speed to pin fans to on sustained data loss (default 100) |
 | `prediction` | Opt-in windowed+trend mode (off by default) |
+| `smoothing` | Opt-in output damping — deadband plus an asymmetric rate limit (off by default) |
 | `process_prediction` | Opt-in `/proc` learning (off by default) |
 
 ## Predictive mode
 
-Both layers below are **opt-in and default off** — with neither configured the daemon behaves exactly as described above (instant readings → curve → speed).
+All three layers below are **opt-in and default off** — with none configured the daemon behaves exactly as described above (instant readings → curve → speed).
 
-**Windowed + trend (`prediction`).** Instead of reacting to the latest sample, the daemon reads a short window of recent history and drives the curve off `max(quantile(window), last + trend·horizon)`. A high quantile means a brief outlier — say a 1-second NVMe spike that's gone before the next poll — never moves the target, while a genuine sustained rise still ramps the fans *early* via the trend term. The critical-temperature fallback also switches to a *sustained* check (`critical_dwell`), so a momentary blip past the limit won't bounce control to the BMC.
+**Windowed + trend (`prediction`).** Instead of reacting to the latest sample, the daemon reads a short window of recent history and drives the curve off `max(quantile(window), trend_endpoint + trend·horizon)`. Both terms are robust: the quantile discards outliers by construction, and the trend is a Theil-Sen fit whose endpoint is a median level rather than the newest reading. That combination is what makes a brief outlier — say a one-scrape NVMe spike that's gone before the next poll — unable to move the target at all, even when it lands on the most recent sample. A genuine sustained rise still ramps the fans *early*, because a temperature that keeps climbing moves the median level and the slope together. The critical-temperature fallback also switches to a *sustained* check (`critical_dwell`), so a momentary blip past the limit won't bounce control to the BMC.
+
+**Output smoothing (`smoothing`).** Prediction damps the temperature going in; this damps the fan speed coming out, which matters because a steep curve turns a degree of remaining noise into an audible step. Changes smaller than `deadband` are not applied at all, and decreases are limited to `max_step_down` per poll so the fans coast down rather than drop. It is deliberately asymmetric: `max_step_up` defaults to 100, meaning a rise is applied in full the moment it clears the deadband, and any reading at or above `urgent_temp` bypasses the block entirely. Smoothing can therefore make the fans quieter and slower to fall, but it cannot make them slower to respond to heat.
 
 **Process pre-emption (`process_prediction`).** The daemon watches the host's `/proc`, learns each process name's thermal signature over repeated runs (persisted to disk), and acts when a known one launches: a *sustained* load pre-warms the fans (raises a temporary floor) ahead of the heat, and a known *transient* holds the current speed steady through its spike instead of chasing it. A hold is time-bounded, broken the instant temperature climbs past what was learned, and always overridden by the critical fallback — it can delay a needless ramp but can never under-cool a real rise. Requires the daemon to run on the monitored host and to have write access to `model_path`.
 

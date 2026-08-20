@@ -33,6 +33,7 @@ type Config struct {
 
 	Prediction        Prediction        `yaml:"prediction"`
 	ProcessPrediction ProcessPrediction `yaml:"process_prediction"`
+	Smoothing         Smoothing         `yaml:"smoothing"`
 }
 
 type Duration time.Duration
@@ -59,6 +60,14 @@ type Prediction struct {
 	Quantile      float64  `yaml:"quantile"`
 	TrendHorizon  Duration `yaml:"trend_horizon"`
 	CriticalDwell Duration `yaml:"critical_dwell"`
+}
+
+type Smoothing struct {
+	Enabled     bool    `yaml:"enabled"`
+	Deadband    int     `yaml:"deadband"`
+	MaxStepUp   int     `yaml:"max_step_up"`
+	MaxStepDown int     `yaml:"max_step_down"`
+	UrgentTemp  float64 `yaml:"urgent_temp"`
 }
 
 type ProcessPrediction struct {
@@ -151,13 +160,28 @@ func (c *Config) applyDefaults() {
 			c.Prediction.Step = Duration(10 * time.Second)
 		}
 		if c.Prediction.Quantile == 0 {
-			c.Prediction.Quantile = 0.9
+			c.Prediction.Quantile = 0.6
 		}
 		if c.Prediction.TrendHorizon == 0 {
 			c.Prediction.TrendHorizon = Duration(30 * time.Second)
 		}
 		if c.Prediction.CriticalDwell == 0 {
 			c.Prediction.CriticalDwell = Duration(15 * time.Second)
+		}
+	}
+
+	if c.Smoothing.Enabled {
+		if c.Smoothing.Deadband == 0 {
+			c.Smoothing.Deadband = 3
+		}
+		if c.Smoothing.MaxStepUp == 0 {
+			c.Smoothing.MaxStepUp = 100
+		}
+		if c.Smoothing.MaxStepDown == 0 {
+			c.Smoothing.MaxStepDown = 5
+		}
+		if c.Smoothing.UrgentTemp == 0 {
+			c.Smoothing.UrgentTemp = c.TempCritical - 10
 		}
 	}
 
@@ -260,6 +284,25 @@ func (c *Config) validate() error {
 		}
 		if p.CriticalDwell < 0 {
 			return errors.New("prediction.critical_dwell must not be negative")
+		}
+	}
+
+	if c.Smoothing.Enabled {
+		s := c.Smoothing
+		if s.Deadband < 0 || s.Deadband > 50 {
+			return fmt.Errorf("smoothing.deadband %d out of range 0-50", s.Deadband)
+		}
+		if s.MaxStepUp < 1 || s.MaxStepUp > 100 {
+			return fmt.Errorf("smoothing.max_step_up %d out of range 1-100", s.MaxStepUp)
+		}
+		if s.MaxStepDown < 1 || s.MaxStepDown > 100 {
+			return fmt.Errorf("smoothing.max_step_down %d out of range 1-100", s.MaxStepDown)
+		}
+		if s.UrgentTemp <= 0 {
+			return errors.New("smoothing.urgent_temp must be greater than 0")
+		}
+		if s.UrgentTemp > c.TempCritical {
+			return fmt.Errorf("smoothing.urgent_temp %g must not exceed temp_critical %g", s.UrgentTemp, c.TempCritical)
 		}
 	}
 

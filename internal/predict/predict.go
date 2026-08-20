@@ -33,25 +33,53 @@ func Quantile(samples []datasource.Sample, q float64) float64 {
 }
 
 func Slope(samples []datasource.Sample) float64 {
+	slope, _ := Trend(samples)
+	return slope
+}
+
+func Trend(samples []datasource.Sample) (slope, fittedEnd float64) {
 	n := len(samples)
-	if n < 2 {
-		return 0
+	if n == 0 {
+		return 0, 0
 	}
+	if n == 1 {
+		return 0, samples[0].V
+	}
+
 	t0 := samples[0].T
-	var sumT, sumV, sumTV, sumTT float64
-	for _, s := range samples {
-		t := s.T - t0
-		sumT += t
-		sumV += s.V
-		sumTV += t * s.V
-		sumTT += t * t
+	pairs := make([]float64, 0, n*(n-1)/2)
+	for i := range samples {
+		for j := i + 1; j < n; j++ {
+			dt := samples[j].T - samples[i].T
+			if dt == 0 {
+				continue
+			}
+			pairs = append(pairs, (samples[j].V-samples[i].V)/dt)
+		}
 	}
-	fn := float64(n)
-	denom := fn*sumTT - sumT*sumT
-	if denom == 0 {
+
+	level := make([]float64, n)
+	if len(pairs) > 0 {
+		slope = median(pairs)
+	}
+	for i, s := range samples {
+		level[i] = s.V - slope*(s.T-t0)
+	}
+	return slope, median(level) + slope*(samples[n-1].T-t0)
+}
+
+func median(vs []float64) float64 {
+	n := len(vs)
+	if n == 0 {
 		return 0
 	}
-	return (fn*sumTV - sumT*sumV) / denom
+	s := make([]float64, n)
+	copy(s, vs)
+	sort.Float64s(s)
+	if n%2 == 1 {
+		return s[n/2]
+	}
+	return (s[n/2-1] + s[n/2]) / 2
 }
 
 func Last(samples []datasource.Sample) float64 {
@@ -66,11 +94,11 @@ func Effective(samples []datasource.Sample, q, horizonSec float64) float64 {
 		return 0
 	}
 	robust := Quantile(samples, q)
-	slope := Slope(samples)
+	slope, fittedEnd := Trend(samples)
 	if slope < 0 {
 		slope = 0
 	}
-	projection := Last(samples) + slope*horizonSec
+	projection := fittedEnd + slope*horizonSec
 	return math.Max(robust, projection)
 }
 
