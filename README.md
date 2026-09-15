@@ -1,70 +1,70 @@
 # dellipmifanctl
 
-**Replaces Dell BMC automatic fan control with a temperature-driven loop — reads temps from Prometheus or Grafana and drives the fans via `ipmitool`.**
+dellipmifanctl takes fan control on a Dell server away from the BMC and drives the fans from temperatures it reads out of Prometheus or Grafana.
+On every poll it runs one PromQL query per sensor, maps each reading onto a fan curve, scales it by that sensor's weight, and sends the highest result to the BMC through ipmitool, either on the local /dev/ipmi0 device or to a remote BMC over LAN+.
+BMC automatic fan control stays switched off while it runs and is restored when it exits.
 
-> ⚠️ Intended for a trusted LAN. It controls server cooling directly; a bad fan curve or an unreachable datasource can let hardware run hot. Verify your curve under load before relying on it.
-
-## Contents
-
-- [How it works](#how-it-works)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Predictive mode](#predictive-mode)
-- [Safety behaviour](#safety-behaviour)
-
-## How it works
-
-A single Go binary polls one or more PromQL queries on each cycle, interpolates each reading against a user-defined fan curve, weights it, and takes the maximum across sensors as the target fan speed. That percentage is pushed to the Dell BMC over `ipmitool` (local `/dev/ipmi0` or remote LAN+). The BMC's own automatic control is disabled while the daemon runs and always restored on exit. If the datasource goes dark or a sensor crosses a critical threshold, control is handed straight back to the BMC until things recover.
-
-## Requirements
-
-- Dell server with iDRAC, reachable via `ipmitool` (locally or over LAN+)
-- `ipmitool` installed on the host
-- A Prometheus or Grafana datasource exposing temperature metrics (e.g. `node_exporter`)
-
-No other runtime dependencies — HTTP, JSON, and the fan math are all in the binary.
+It runs against a Dell server with iDRAC that ipmitool can reach, with ipmitool installed on the host and a Prometheus or Grafana datasource that exposes temperature metrics, such as the ones node_exporter provides.
 
 ## Installation
 
-Download the latest binary for your architecture and make it executable:
+Each release carries a static binary for linux amd64 and arm64.
 
-```bash
+```sh
 sudo curl -fL -o /usr/local/bin/dellipmifanctl \
   https://github.com/xsaveopt/dell-ipmitemps/releases/latest/download/dellipmifanctl_linux_amd64
 sudo chmod +x /usr/local/bin/dellipmifanctl
 ```
 
-Replace `amd64` with `arm64` on ARM hosts. To run it as a service, see [docs/systemd.md](docs/systemd.md).
+On an ARM host the file ends in arm64 instead.
+Local mode opens /dev/ipmi0, which needs root, and docs/systemd.md has a unit file for running the daemon as a service.
 
 ## Configuration
 
-Configuration lives in a YAML file, by default `/etc/dellipmifanctl/config.yaml` (override with `-config <path>` or the `DELLIPMIFANCTL_CONFIG` env var). The daemon refuses to start if the file is missing. Copy [`config.yaml.example`](config.yaml.example) as a starting point — it documents every option inline.
+The daemon reads a YAML file from /etc/dellipmifanctl/config.yaml, or from the path in the DELLIPMIFANCTL_CONFIG environment variable, and a -config flag takes precedence over both.
+It refuses to start when that file is missing or contains an unknown key.
+config.yaml.example documents every option and makes a good starting copy.
 
-| Setting | Purpose |
+| Key | Purpose |
 | --- | --- |
-| `datasource.type` | `prometheus` or `grafana` |
-| `sensors` | List of `{ name, query, weight }` — PromQL per sensor; weight scales its pull |
-| `fan_curve` | Ascending `{ temp, percent }` breakpoints, interpolated linearly |
-| `ipmi.local` | `true` for `/dev/ipmi0`, `false` for a remote BMC over LAN+ |
-| `temp_critical` | Above this °C, hand control back to the BMC |
-| `disable_pcie_cooling_response` | Suppress the BMC's 100% ramp for third-party PCIe cards |
-| `min_fan_speed` / `poll_interval` / `max_fetch_failures` | Floor speed, poll cadence, failure tolerance |
-| `fetch_failure_fan_speed` | Fail-safe speed to pin fans to on sustained data loss (default 100) |
-| `prediction` | Opt-in windowed+trend mode (off by default) |
-| `smoothing` | Opt-in output damping — deadband plus an asymmetric rate limit (off by default) |
-| `process_prediction` | Opt-in `/proc` learning (off by default) |
-
-## Predictive mode
-
-All three layers below are **opt-in and default off** — with none configured the daemon behaves exactly as described above (instant readings → curve → speed).
-
-**Windowed + trend (`prediction`).** Instead of reacting to the latest sample, the daemon reads a short window of recent history and drives the curve off `max(quantile(window), trend_endpoint + trend·horizon)`. Both terms are robust: the quantile discards outliers by construction, and the trend is a Theil-Sen fit whose endpoint is a median level rather than the newest reading. That combination is what makes a brief outlier — say a one-scrape NVMe spike that's gone before the next poll — unable to move the target at all, even when it lands on the most recent sample. A genuine sustained rise still ramps the fans *early*, because a temperature that keeps climbing moves the median level and the slope together. The critical-temperature fallback also switches to a *sustained* check (`critical_dwell`), so a momentary blip past the limit won't bounce control to the BMC.
-
-**Output smoothing (`smoothing`).** Prediction damps the temperature going in; this damps the fan speed coming out, which matters because a steep curve turns a degree of remaining noise into an audible step. Changes smaller than `deadband` are not applied at all, and decreases are limited to `max_step_down` per poll so the fans coast down rather than drop. It is deliberately asymmetric: `max_step_up` defaults to 100, meaning a rise is applied in full the moment it clears the deadband, and any reading at or above `urgent_temp` bypasses the block entirely. Smoothing can therefore make the fans quieter and slower to fall, but it cannot make them slower to respond to heat.
-
-**Process pre-emption (`process_prediction`).** The daemon watches the host's `/proc`, learns each process name's thermal signature over repeated runs (persisted to disk), and acts when a known one launches: a *sustained* load pre-warms the fans (raises a temporary floor) ahead of the heat, and a known *transient* holds the current speed steady through its spike instead of chasing it. A hold is time-bounded, broken the instant temperature climbs past what was learned, and always overridden by the critical fallback — it can delay a needless ramp but can never under-cool a real rise. Requires the daemon to run on the monitored host and to have write access to `model_path`.
+| `datasource` | `type` is `prometheus` or `grafana`, with a `url` for Prometheus, or a `url`, `token` and `datasource_uid` for Grafana |
+| `ipmi` | `local: true` uses /dev/ipmi0, and `local: false` connects to `host` with `user` and `pass` over LAN+ |
+| `sensors` | List of `{ name, query, weight }`, where the weight scales how far above `min_fan_speed` that sensor can push the fans |
+| `fan_curve` | `{ temp, percent }` breakpoints in ascending temperature, interpolated linearly, with the first point's percent below it and 100 at or past the last point |
+| `min_fan_speed` | Lowest speed the daemon ever commands |
+| `poll_interval` | Seconds between polls |
+| `temp_critical` | A reading at or above this hands control back to the BMC |
+| `max_fetch_failures` | Consecutive failed polls before the fail-safe speed applies |
+| `fetch_failure_fan_speed` | Speed the fans are pinned to while sensor data is missing |
+| `disable_pcie_cooling_response` | Turns off the BMC's fan ramp for third-party PCIe cards |
+| `prediction` | Opt-in windowed and trend readings |
+| `smoothing` | Opt-in damping of the applied fan speed |
+| `process_prediction` | Opt-in learning of process thermal signatures from /proc |
 
 ## Safety behaviour
 
-If the daemon cannot reach the datasource for `max_fetch_failures` consecutive polls, it keeps manual control and pins the fans to `fetch_failure_fan_speed` (100% by default) rather than handing back to the BMC — the BMC can't see the sensors that just went dark, so the safe move is full cooling until data returns. If instead any sensor exceeds `temp_critical`, it does hand control back to BMC automatic fan control and keeps retrying. Either way, manual curve control resumes once readings return to normal. On `SIGINT`/`SIGTERM`/`SIGHUP`, and whenever it hands back to the BMC, it restores BMC auto mode and re-enables the default PCIe cooling response (retried, so a transient `ipmitool` hiccup can't leave the box stuck in manual).
+When the datasource fails for max_fetch_failures polls in a row, the daemon keeps manual control and pins the fans to fetch_failure_fan_speed, because the BMC cannot see the sensors that went dark either.
+A sensor at or above temp_critical is handled the other way round, by handing control back to BMC automatic mode.
+In both cases curve control resumes on its own once readings return to normal.
+On SIGINT, SIGTERM or SIGHUP, and on every hand-back to the BMC, it restores automatic mode and re-enables the default PCIe cooling response, retrying each ipmitool call so a single failed command leaves nothing stuck in manual.
+
+## Predictive mode
+
+The three blocks below are off by default, and with none of them enabled each poll drives the curve from the latest reading.
+
+With prediction enabled, each sensor is read as a short window of recent history, and the curve is fed the higher of a quantile over that window and a Theil-Sen trend projected trend_horizon ahead, where only a rising slope is projected.
+Neither term hangs on the newest sample, so a one-scrape spike leaves the fans where they were, while a temperature that keeps climbing lifts both terms and ramps the fans early.
+The critical check becomes sustained as well, so a sensor has to stay at or above temp_critical for critical_dwell before control goes back to the BMC.
+
+Smoothing works on the fan speed coming out of the curve, which matters on a steep curve where a degree of noise turns into an audible step.
+A change within deadband is skipped, drops are limited to max_step_down per poll so the fans coast down, and rises are limited by max_step_up, which the example sets to 100 so a rise past the deadband applies at once.
+Any reading at or above urgent_temp bypasses smoothing entirely.
+
+Process prediction watches /proc, learns the thermal signature of each process name over repeated runs, and keeps that model at model_path.
+When a known process starts, a sustained load raises a temporary fan floor ahead of the heat, and a known transient holds the current speed through its spike.
+A hint lasts at most preempt_ttl, a hold breaks as soon as the temperature climbs past the learned rise scaled by hold_margin, and the critical fallback always wins over both.
+The daemon has to run on the monitored host for this and needs write access to model_path.
+
+## License
+
+GPL-2.0, see LICENSE.
