@@ -9,12 +9,19 @@ import (
 	"github.com/xsaveopt/dell-ipmitemps/internal/config"
 )
 
+type commandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
+
 type Controller struct {
-	cfg config.IPMI
+	cfg  config.IPMI
+	exec commandRunner
 }
 
 func New(cfg config.IPMI) *Controller {
-	return &Controller{cfg: cfg}
+	return &Controller{cfg: cfg, exec: runCommand}
+}
+
+func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 func (c *Controller) Ping(ctx context.Context) error {
@@ -49,7 +56,7 @@ func (c *Controller) run(ctx context.Context, args ...string) error {
 		full = append([]string{"-I", "lanplus", "-H", c.cfg.Host, "-U", c.cfg.User, "-P", c.cfg.Pass}, args...)
 	}
 
-	out, err := exec.CommandContext(ctx, "ipmitool", full...).CombinedOutput()
+	out, err := c.exec(ctx, "ipmitool", full...)
 	if err != nil {
 		return fmt.Errorf("ipmitool %s: %w: %s",
 			strings.Join(args, " "), err, strings.TrimSpace(string(out)))

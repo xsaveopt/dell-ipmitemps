@@ -17,14 +17,35 @@ import (
 	"github.com/xsaveopt/dell-ipmitemps/internal/procwatch"
 )
 
-const stateFile = "/run/dellipmifanctl.state"
+const (
+	stateFile       = "/run/dellipmifanctl.state"
+	retryAttempts   = 3
+	retryPauseDelay = 500 * time.Millisecond
+)
+
+type fetcher interface {
+	FetchTemp(ctx context.Context, query string) (float64, error)
+	FetchRange(ctx context.Context, query string, lookback, step time.Duration) ([]datasource.Sample, error)
+}
+
+type fanController interface {
+	Ping(ctx context.Context) error
+	SetManual(ctx context.Context) error
+	SetAuto(ctx context.Context) error
+	SetSpeed(ctx context.Context, pct int) error
+	DisablePCIeCooling(ctx context.Context) error
+	EnablePCIeCooling(ctx context.Context) error
+}
 
 type Controller struct {
 	cfg     *config.Config
-	ds      *datasource.Fetcher
-	ipmi    *ipmi.Controller
+	ds      fetcher
+	ipmi    fanController
 	watcher *procwatch.Watcher
 	log     *slog.Logger
+
+	statePath  string
+	retryPause time.Duration
 
 	consecutiveFailures int
 	inAutoMode          bool
@@ -34,11 +55,13 @@ type Controller struct {
 
 func New(cfg *config.Config, log *slog.Logger) *Controller {
 	c := &Controller{
-		cfg:       cfg,
-		ds:        datasource.New(cfg.Datasource),
-		ipmi:      ipmi.New(cfg.IPMI),
-		log:       log,
-		lastSpeed: -1,
+		cfg:        cfg,
+		ds:         datasource.New(cfg.Datasource),
+		ipmi:       ipmi.New(cfg.IPMI),
+		log:        log,
+		statePath:  stateFile,
+		retryPause: retryPauseDelay,
+		lastSpeed:  -1,
 	}
 	if cfg.ProcessPrediction.Enabled {
 		pp := cfg.ProcessPrediction
@@ -261,15 +284,14 @@ func (c *Controller) handBackToBMC(ctx context.Context) {
 }
 
 func (c *Controller) withRetry(op string, fn func() error) {
-	const attempts = 3
 	var err error
-	for i := 1; i <= attempts; i++ {
+	for i := 1; i <= retryAttempts; i++ {
 		if err = fn(); err == nil {
 			return
 		}
 		c.log.Warn("ipmi command failed, retrying", "op", op, "attempt", i, "err", err)
-		if i < attempts {
-			time.Sleep(500 * time.Millisecond)
+		if i < retryAttempts {
+			time.Sleep(c.retryPause)
 		}
 	}
 	c.log.Error("ipmi command failed after retries", "op", op, "err", err)
@@ -291,21 +313,21 @@ func (c *Controller) restoreAuto() {
 
 	c.log.Info("restoring BMC automatic fan control")
 	c.handBackToBMC(ctx)
-	if err := os.Remove(stateFile); err != nil && !os.IsNotExist(err) {
-		c.log.Warn("failed to remove state file", "file", stateFile, "err", err)
+	if err := os.Remove(c.statePath); err != nil && !os.IsNotExist(err) {
+		c.log.Warn("failed to remove state file", "file", c.statePath, "err", err)
 	}
 }
 
 func (c *Controller) restoreState() {
-	data, err := os.ReadFile(stateFile)
+	data, err := os.ReadFile(c.statePath)
 	if err != nil {
 		return
 	}
 	raw := strings.TrimSpace(string(data))
 	v, err := strconv.Atoi(raw)
 	if err != nil || v < 0 || v > 100 {
-		c.log.Warn("state file has invalid value; ignoring", "file", stateFile, "value", raw)
-		_ = os.Remove(stateFile)
+		c.log.Warn("state file has invalid value; ignoring", "file", c.statePath, "value", raw)
+		_ = os.Remove(c.statePath)
 		return
 	}
 	c.lastSpeed = v
@@ -313,7 +335,7 @@ func (c *Controller) restoreState() {
 }
 
 func (c *Controller) saveState(v int) {
-	if err := os.WriteFile(stateFile, []byte(strconv.Itoa(v)), 0o644); err != nil {
-		c.log.Warn("failed to write state file", "file", stateFile, "err", err)
+	if err := os.WriteFile(c.statePath, []byte(strconv.Itoa(v)), 0o644); err != nil {
+		c.log.Warn("failed to write state file", "file", c.statePath, "err", err)
 	}
 }
