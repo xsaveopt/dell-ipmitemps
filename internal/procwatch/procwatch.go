@@ -323,6 +323,9 @@ func (w *Watcher) loadModel() {
 		w.log.Warn("process model is unreadable; starting fresh", "path", w.opts.ModelPath, "err", err)
 		return
 	}
+	if m == nil {
+		m = Model{}
+	}
 	cutoff := time.Now().Add(-staleAge).Unix()
 	for name, s := range m {
 		if s == nil || s.LastSeen < cutoff {
